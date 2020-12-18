@@ -17,16 +17,16 @@ Base.convert(::Type{AccountNumber}, value::String) = AccountNumber(value)
 abstract type AbstractAccount{P <: Position} end
 
 
-
-struct AccountGroup{A <: AbstractAccount}
+struct AccountGroup{P,A <: AbstractAccount{P}} <: AbstractAccount{P}
     id::AccountId
     number::AccountNumber
     name::String
     isdebit::Bool
     accounts::Dict{AccountId,A}
-    subgroups::Dict{AccountId,AccountGroup{A}}
+    subgroups::Dict{AccountId,AccountGroup{P,A}}
 end
 id(ag::AccountGroup) = ag.id
+id(acc::AbstractAccount) = ledgeraccount(acc).id
 
 function AccountGroup(
         ::Type{A};
@@ -35,13 +35,13 @@ function AccountGroup(
         isdebit=true,
         id=AccountId(),
         parent::Union{Nothing,AccountGroup{A}}=nothing
-    ) where {A <: AbstractAccount}
+    ) where {P,A <: AbstractAccount{P}}
     accounts = Dict{AccountId,A}()
-    subgroups = Dict{AccountId,AccountGroup{A}}()
+    subgroups = Dict{AccountId,AccountGroup{P,A}}()
     if parent === nothing
-        return AccountGroup{A}(id, number, name, isdebit, accounts, subgroups)
+        return AccountGroup{P,A}(id, number, name, isdebit, accounts, subgroups)
     else
-        group = AccountGroup{A}(id, number, name, isdebit, accounts, subgroups)
+        group = AccountGroup{P,A}(id, number, name, isdebit, accounts, subgroups)
         add_subgroup!(parent.subgroups, group)
         return acc
     end
@@ -53,6 +53,10 @@ function AccountGroup(accounts::AbstractVector{A}; kwargs...) where {A<:Abstract
     return ag
 end
 
+Base.in(contained_account::AbstractAccount, account::AbstractAccount) = id(account) == id(contained_account)
+function Base.in(account::AbstractAccount, group::AccountGroup)
+    id(account) == group.id || id(account) ∈ keys(group.accounts) || any(id(account) .∈ group.subgroups)
+end
 
 macro ifsomething(ex)
     quote
@@ -77,7 +81,7 @@ function Base.iterate(group::AccountGroup,
     return (account, (accounts_state, subgroups_state))
 end
 
-function add_account!(grp::AccountGroup{A}, acc::A) where {A <: AbstractAccount}
+function add_account!(grp::AccountGroup{P,A}, acc::A) where {P,A <: AbstractAccount{P}}
     if id(acc) ∈ keys(grp.accounts) # FIXME check subgroups?
         warn("Account already in ledger.")
         return
@@ -85,12 +89,12 @@ function add_account!(grp::AccountGroup{A}, acc::A) where {A <: AbstractAccount}
     grp.accounts[id(acc)] = acc
 end
 
-function add_account!(grp::AccountGroup{A}, group::AccountGroup{A}) where {A <: AbstractAccount}
+function add_account!(grp::AccountGroup{P,A}, group::AccountGroup{P,A}) where {P,A <: AbstractAccount{P}}
     push!(grp.subgroups, group)
 end
 
 
-function balance(group::AccountGroup{<:AbstractAccount{P}}) where {P <: Position}
+function balance(group::AccountGroup{P,<:AbstractAccount{P}}) where {P <: Position}
     isnothing(iterate(group)) && return P(0)
     return sum(account for account in group)
 end

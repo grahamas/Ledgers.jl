@@ -20,41 +20,21 @@ using Instruments: Position
 import Instruments: instrument, currency, symbol, position, amount
 
 export Identifier, AccountId, AbstractAccount, AccountWrapper, AccountNumber
-export LedgerAccount, Ledger, Entry, Account, AccountGroup, ledgeraccount, add_account
-export id, balance, credit!, debit!, post!
+export LedgerAccount, Ledger, Entry, Account, AccountGroup, ledgeraccount, add_account, ledger
+export id, balance, credit!, debit!, post!, add_entry!
 # Although the methods below are exported by Instruments, we export them explicitly 
 # because we do not expect users to use `Instruments` directly.
 export instrument, currency, symbol, position, amount
 
 include("accounts.jl")
 
-mutable struct LedgerAccount{P} <: AbstractAccount{P}
-    id::AccountId
-    balance::P
-end
+abstract type AbstractLedgerAccount{P} <: AbstractAccount{P} end
 
-function LedgerAccount(balance::P; ledger=nothing) where {P <: Position}
-    ledger === nothing && return LedgerAccount{P}(AccountId(), balance)
-    acc = LedgerAccount{P}(AccountId(), balance)
-    add_account!(ledger, acc)
-    acc
-end
-
-LedgerAccount(::Type{P}; ledger=nothing) where {P <: Position} =
-    LedgerAccount(P(0), ledger=ledger)
-
-ledgeraccount(acc::LedgerAccount) = acc
-ledgeraccount(acc::AbstractAccount) = ledgeraccount(acc.account)
-
-balance(acc::LedgerAccount) = acc.balance
-id(acc::LedgerAccount) = acc.id
-
-struct Entry{P,A<:LedgerAccount{P}}
+struct Entry{P,A<:AbstractLedgerAccount{P}}
     debit::A
     credit::A
     amount::P
 end
-
 
 struct LedgerId <: Identifier
     value::UUID
@@ -62,20 +42,49 @@ end
 
 LedgerId() = LedgerId(uuid4())
 
-struct Ledger{P <: Position}
+struct Ledger{P <: Position,A<:AbstractLedgerAccount{P}}
     id::LedgerId
-    accounts::Dict{AccountId,LedgerAccount{P}}
+    accounts::Dict{AccountId,A}
     entries::Vector{Entry{P}}
 end
 
-function Ledger(accounts::AbstractVector{LedgerAccount{P}}, entries::AbstractVector{Entry{P}}; id=LedgerId()) where {P <: Position}
+function Ledger(accounts::AbstractVector{<:AbstractLedgerAccount{P}}, entries::AbstractVector{Entry{P}}; id=LedgerId()) where {P <: Position}
     ledger = Ledger(P)
     add_account!.(Ref(ledger), accounts)
     add_entry!.(Ref(ledger), entries)
     return ledger
 end
 
-Ledger(::Type{P}) where {P <: Position} = Ledger{P}(LedgerId(),Dict{AccountId,LedgerAccount{P}}(), Vector{Entry{P}}())
+Base.iterate(ledger::Ledger, state=1) = iterate(ledger.entries, state)
+
+Ledger(::Type{P}) where {P <: Position} = Ledger{P,LedgerAccount{P}}(LedgerId(),Dict{AccountId,LedgerAccount{P}}(), Vector{Entry{P}}())
+
+mutable struct LedgerAccount{P} <: AbstractLedgerAccount{P}
+    id::AccountId
+    balance::P
+    ledger::Ledger{P}
+end
+
+function LedgerAccount(balance::P, ledger) where {P <: Position}
+    acc = LedgerAccount{P}(AccountId(), balance, ledger)
+    add_account!(ledger, acc)
+    acc
+end
+
+LedgerAccount(::Type{P}, ledger) where {P <: Position} =
+    LedgerAccount(P(0), ledger)
+
+ledgeraccount(acc::LedgerAccount) = acc
+ledgeraccount(acc::AbstractAccount) = ledgeraccount(acc.account)
+
+ledger(acc::LedgerAccount) = acc.ledger
+ledger(acc::AbstractAccount) = ledger(ledgeraccount(acc))
+
+balance(acc::LedgerAccount) = acc.balance
+balance(acc::AbstractAccount) = balance(ledgeraccount(acc))
+id(acc::LedgerAccount) = acc.id
+
+
 
 function add_account!(ledger::Ledger{P}, acc::AbstractAccount{P}) where {P <: Position}
     acc = ledgeraccount(acc)
@@ -116,8 +125,8 @@ debit!(acc::LedgerAccount, amt::Position) = (acc.balance -= amt)
 credit!(acc::LedgerAccount, amt::Position) = (acc.balance += amt)
 
 function post!(entry::Entry)
-    debit!(ledgeraccount(entry.debit), entry.amt)
-    credit!(ledgeraccount(entry.credit), entry.amt)
+    debit!(ledgeraccount(entry.debit), entry.amount)
+    credit!(ledgeraccount(entry.credit), entry.amount)
 end
 
 Base.getindex(ledger::Ledger, ix) = ledger.entries[ix]
